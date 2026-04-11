@@ -63,7 +63,7 @@ class IndexChannelRequest(BaseModel):
     channel_url: str
     user_id: str
     language: str = "hi"
-    max_videos: int = 50
+    max_videos: int = 5
 
 # ══════════════════════════════════════════════════════
 # HEALTH CHECK
@@ -158,7 +158,7 @@ async def poll_pending_channels():
 # CORE PIPELINE
 # ══════════════════════════════════════════════════════
 def run_indexing_pipeline(channel_id: str, channel_url: str, user_id: str,
-                           language: str = "hi", max_videos: int = 50):
+                           language: str = "hi", max_videos: int = 5):
     log.info(f"🚀 Starting pipeline for: {channel_url}")
     sb.table("channels").update({"status": "indexing"}).eq("id", channel_id).execute()
 
@@ -222,22 +222,25 @@ def run_indexing_pipeline(channel_id: str, channel_url: str, user_id: str,
 # TRANSCRIPT HELPERS
 # ══════════════════════════════════════════════════════
 def fetch_transcript_with_retry(video_id: str, language: str = "hi", retries: int = 3) -> str | None:
-    """Try fetching transcript using different proxies on each retry."""
-    for attempt in range(retries):
-        proxy = get_proxy()
-        log.info(f"      Attempt {attempt+1} with proxy {proxy['http'].split('@')[1]}")
-        try:
-            ytt = YouTubeTranscriptApi(proxies=proxy)
-            transcript_list = ytt.list(video_id)
-            hindi_codes = ['hi', 'hi-IN', 'hi-Latn']
+    """Try fetching transcript using different proxies - compatible with youtube-transcript-api v1.x"""
+    import requests
+    hindi_codes = ['hi', 'hi-IN', 'hi-Latn']
 
-            # Try native Hindi first
+    for attempt in range(retries):
+        proxy      = get_proxy()
+        proxy_host = proxy['http'].split('@')[1]
+        log.info(f"      Attempt {attempt+1} with proxy {proxy_host}")
+        try:
+            session = requests.Session()
+            session.proxies.update(proxy)
+            ytt = YouTubeTranscriptApi(http_client=session)
+            transcript_list = ytt.list(video_id)
+
             for t in transcript_list:
                 if t.language_code in hindi_codes:
                     fetched = t.fetch()
                     return ' '.join([s.text for s in fetched])
 
-            # Fallback: translate auto-generated to Hindi
             for t in transcript_list:
                 if t.is_generated:
                     try:
@@ -247,8 +250,8 @@ def fetch_transcript_with_retry(video_id: str, language: str = "hi", retries: in
                         continue
 
         except Exception as e:
-            log.warning(f"      Proxy attempt {attempt+1} failed: {str(e)[:80]}")
-            time.sleep(2)  # Wait before retrying
+            log.warning(f"      Proxy attempt {attempt+1} failed: {str(e)[:100]}")
+            time.sleep(2)
 
     log.error(f"      All {retries} proxy attempts failed for {video_id}")
     return None
