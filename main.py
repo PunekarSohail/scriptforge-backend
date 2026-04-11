@@ -28,19 +28,19 @@ SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
 SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")
 sb: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# ── PROXY LIST — all 10 free proxies from WebShare ───
+
 # Format: http://username:password@host:port
 PROXIES = [
     "http://ifzcaztp:fu28emzeuzha@31.59.20.176:6754",
-    "http://ifzcaztp:fu28emzeuzha@85.209.129.116:6218",
-    "http://ifzcaztp:fu28emzeuzha@195.181.247.37:6320",
-    "http://ifzcaztp:fu28emzeuzha@185.242.235.50:5398",
-    "http://ifzcaztp:fu28emzeuzha@194.126.174.45:6463",
-    "http://ifzcaztp:fu28emzeuzha@45.151.163.180:6182",
-    "http://ifzcaztp:fu28emzeuzha@185.242.235.167:5515",
-    "http://ifzcaztp:fu28emzeuzha@154.92.18.6:6141",
-    "http://ifzcaztp:fu28emzeuzha@154.92.18.88:6223",
-    "http://ifzcaztp:fu28emzeuzha@154.92.18.169:6304",
+    "http://ifzcaztp:fu28emzeuzha@198.23.239.134:6540",
+    "http://ifzcaztp:fu28emzeuzha@45.38.107.97:6014",
+    "http://ifzcaztp:fu28emzeuzha@107.172.163.27:6543",
+    "http://ifzcaztp:fu28emzeuzha@198.105.121.200:6462",
+    "http://ifzcaztp:fu28emzeuzha@216.10.27.159:6837",
+    "http://ifzcaztp:fu28emzeuzha@142.111.67.146:5611",
+    "http://ifzcaztp:fu28emzeuzha@191.96.254.138:6185",
+    "http://ifzcaztp:fu28emzeuzha@31.58.9.4:6077",
+    "http://ifzcaztp:fu28emzeuzha@64.137.10.153:5803",
 ]
 
 def get_proxy() -> dict:
