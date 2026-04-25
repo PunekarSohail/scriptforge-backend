@@ -285,21 +285,28 @@ def get_video_ids(channel_url: str, max_count: int = 5) -> list:
 # ══════════════════════════════════════════════════════
 def fetch_transcript(video_id: str, language: str = "hi") -> str | None:
     """
-    Fetch transcript using youtube-transcript-api with YouTube cookies.
-    Cookies bypass Railway's cloud IP ban on transcript fetching.
-    Upload cookies.txt to the repo root to enable this.
+    Fetch transcript using youtube-transcript-api v1.2.4
+    Uses cookies.txt loaded into a requests Session to bypass Railway IP ban.
+    Upload cookies.txt (Netscape format) to the repo root to enable auth.
     """
+    import requests
+    import http.cookiejar
+
     hindi_codes  = ['hi', 'hi-IN', 'hi-Latn']
     cookies_file = Path(__file__).parent / "cookies.txt"
 
     try:
+        session = requests.Session()
+
         if cookies_file.exists():
             log.info(f"      Using cookies.txt for auth")
-            ytt = YouTubeTranscriptApi(cookie_path=str(cookies_file))
+            cookie_jar = http.cookiejar.MozillaCookieJar(str(cookies_file))
+            cookie_jar.load(ignore_discard=True, ignore_expires=True)
+            session.cookies = cookie_jar
         else:
             log.warning(f"      No cookies.txt found — trying without auth (may be blocked)")
-            ytt = YouTubeTranscriptApi()
 
+        ytt = YouTubeTranscriptApi(http_client=session)
         transcript_list = ytt.list(video_id)
 
         # Try native Hindi first
