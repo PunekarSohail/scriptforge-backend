@@ -298,7 +298,7 @@ def fetch_transcript(video_id: str, language: str = "hi") -> str | None:
 
     try:
         # Start the Apify actor run
-        start_url = "https://api.apify.com/v2/acts/pintostudios~youtube-video-transcript/run-sync-get-dataset-items"
+        start_url = "https://api.apify.com/v2/acts/pintostudio~youtube-transcript-scraper/run-sync-get-dataset-items"
         
         payload = {
             "videoUrls": [f"https://www.youtube.com/watch?v={video_id}"],
