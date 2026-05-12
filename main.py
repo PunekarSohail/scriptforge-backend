@@ -285,49 +285,61 @@ def get_video_ids(channel_url: str, max_count: int = 5) -> list:
 # ══════════════════════════════════════════════════════
 def fetch_transcript(video_id: str, language: str = "hi") -> str | None:
     """
-    Fetch transcript using youtube-transcript-api v1.2.4
-    Uses cookies.txt loaded into a requests Session to bypass Railway IP ban.
-    Upload cookies.txt (Netscape format) to the repo root to enable auth.
+    Fetch transcript using Apify YouTube Transcript Actor.
+    Works from any cloud IP — no bans.
+    Free tier: $5/month = ~500 transcripts.
     """
     import requests
-    import http.cookiejar
 
-    hindi_codes  = ['hi', 'hi-IN', 'hi-Latn']
-    cookies_file = Path(__file__).parent / "cookies.txt"
+    apify_token = os.environ.get("APIFY_API_TOKEN", "")
+    if not apify_token:
+        log.error("APIFY_API_TOKEN not set")
+        return None
 
     try:
-        session = requests.Session()
+        # Start the Apify actor run
+        start_url = "https://api.apify.com/v2/acts/pintostudios~youtube-video-transcript/run-sync-get-dataset-items"
+        
+        payload = {
+            "videoUrls": [f"https://www.youtube.com/watch?v={video_id}"],
+            "language": language
+        }
 
-        if cookies_file.exists():
-            log.info(f"      Using cookies.txt for auth")
-            cookie_jar = http.cookiejar.MozillaCookieJar(str(cookies_file))
-            cookie_jar.load(ignore_discard=True, ignore_expires=True)
-            session.cookies = cookie_jar
-        else:
-            log.warning(f"      No cookies.txt found — trying without auth (may be blocked)")
+        headers = {
+            "Authorization": f"Bearer {apify_token}",
+            "Content-Type": "application/json"
+        }
 
-        ytt = YouTubeTranscriptApi(http_client=session)
-        transcript_list = ytt.list(video_id)
+        log.info(f"      Fetching via Apify for {video_id}...")
+        res = requests.post(
+            start_url,
+            json=payload,
+            headers=headers,
+            timeout=60
+        )
 
-        # Try native Hindi first
-        for t in transcript_list:
-            if t.language_code in hindi_codes:
-                fetched = t.fetch()
-                return ' '.join([s.text for s in fetched])
+        if res.status_code != 200:
+            log.error(f"      Apify error: {res.status_code} {res.text[:100]}")
+            return None
 
-        # Fallback: translate auto-generated to Hindi
-        for t in transcript_list:
-            if t.is_generated:
-                try:
-                    translated = t.translate('hi').fetch()
-                    return ' '.join([s.text for s in translated])
-                except Exception:
-                    continue
+        data = res.json()
+        if not data:
+            log.info(f"      No transcript returned by Apify")
+            return None
+
+        # Extract transcript text
+        transcript_items = data[0].get("transcript", [])
+        if not transcript_items:
+            # Try alternate format
+            text = data[0].get("text", "")
+            return text if text else None
+
+        full_text = " ".join([item.get("text", "") for item in transcript_items])
+        return full_text if full_text.strip() else None
 
     except Exception as e:
-        log.error(f"      Transcript fetch error for {video_id}: {e}")
-
-    return None
+        log.error(f"      Apify fetch error: {e}")
+        return None
 
 
 # ══════════════════════════════════════════════════════
