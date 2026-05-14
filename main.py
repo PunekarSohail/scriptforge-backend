@@ -190,19 +190,14 @@ def fetch_transcript(video_id: str, language: str = "hi") -> str | None:
     video_url = f"https://www.youtube.com/watch?v={video_id}"
     headers   = {"Authorization": f"Bearer {APIFY_TOKEN}", "Content-Type": "application/json"}
 
-    # Actor 1: most popular YouTube transcript actor
+    # pintostudio~youtube-transcript-scraper — correct input format
     actors = [
         {
-            "url":     "https://api.apify.com/v2/acts/topaz_sharingan~youtube-transcript-scraper/run-sync-get-dataset-items",
-            "payload": {"videoUrl": video_url, "language": language}
-        },
-        {
-            "url":     "https://api.apify.com/v2/acts/bernardo_procedural~youtube-transcript/run-sync-get-dataset-items",
-            "payload": {"url": video_url}
-        },
-        {
-            "url":     "https://api.apify.com/v2/acts/pintostudios~youtube-video-transcript/run-sync-get-dataset-items",
-            "payload": {"startUrls": [{"url": video_url}]}
+            "url": "https://api.apify.com/v2/acts/pintostudio~youtube-transcript-scraper/run-sync-get-dataset-items",
+            "payload": {
+                "videoUrl": video_url,
+                "targetLanguage": language   # "hi" for Hindi, "en" for English
+            }
         },
     ]
 
