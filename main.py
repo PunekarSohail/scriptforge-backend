@@ -1,7 +1,6 @@
 """
 ScriptForge Backend — FastAPI Server
-Runs on Railway.app
-Handles: channel indexing, transcript storage, webhook from Supabase
+Runs on Render.com
 """
 
 import os
@@ -9,6 +8,7 @@ import re
 import time
 import asyncio
 import logging
+from contextlib import asynccontextmanager
 from pathlib import Path
 from datetime import datetime
 
@@ -23,25 +23,27 @@ from pydantic import BaseModel
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 log = logging.getLogger(__name__)
 
-# ── YOUTUBE DATA API v3 ───────────────────────────────
+# ── CONFIG ────────────────────────────────────────────
 YOUTUBE_API_KEY = os.environ.get("YOUTUBE_API_KEY", "")
+SUPABASE_URL    = os.environ.get("SUPABASE_URL", "https://pdezqdtfsukuokqpoyux.supabase.co")
+SUPABASE_KEY    = os.environ.get("SUPABASE_SERVICE_KEY", "")
+APIFY_TOKEN     = os.environ.get("APIFY_API_TOKEN", "")
+
+sb: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 def build_youtube():
     return build("youtube", "v3", developerKey=YOUTUBE_API_KEY, cache_discovery=False)
 
-# ── SUPABASE ──────────────────────────────────────────
-SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://pdezqdtfsukuokqpoyux.supabase.co")
-SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")
-sb: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+# ── LIFESPAN ──────────────────────────────────────────
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    task = asyncio.create_task(poll_pending_channels())
+    yield
+    task.cancel()
 
 # ── APP ───────────────────────────────────────────────
-app = FastAPI(title="ScriptForge Backend", version="1.0.0")
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+app = FastAPI(title="ScriptForge Backend", version="1.0.0", lifespan=lifespan)
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 # ── MODELS ────────────────────────────────────────────
 class IndexChannelRequest(BaseModel):
@@ -51,14 +53,8 @@ class IndexChannelRequest(BaseModel):
     language: str = "hi"
     max_videos: int = 5
 
-class WebhookPayload(BaseModel):
-    type: str
-    table: str
-    record: dict
-    old_record: dict = {}
-
 # ══════════════════════════════════════════════════════
-# HEALTH CHECK
+# HEALTH
 # ══════════════════════════════════════════════════════
 @app.get("/")
 def root():
@@ -84,15 +80,10 @@ async def channel_added_webhook(request: Request, background_tasks: BackgroundTa
         if not all([channel_id, channel_url, user_id]):
             return {"status": "missing fields"}
 
-        background_tasks.add_task(
-            run_indexing_pipeline,
-            channel_id=channel_id,
-            channel_url=channel_url,
-            user_id=user_id,
-            language=language
-        )
+        background_tasks.add_task(run_indexing_pipeline,
+            channel_id=channel_id, channel_url=channel_url,
+            user_id=user_id, language=language)
         return {"status": "indexing started", "channel_id": channel_id}
-
     except Exception as e:
         log.error(f"Webhook error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -102,14 +93,9 @@ async def channel_added_webhook(request: Request, background_tasks: BackgroundTa
 # ══════════════════════════════════════════════════════
 @app.post("/index-channel")
 async def index_channel_manual(req: IndexChannelRequest, background_tasks: BackgroundTasks):
-    background_tasks.add_task(
-        run_indexing_pipeline,
-        channel_id=req.channel_id,
-        channel_url=req.channel_url,
-        user_id=req.user_id,
-        language=req.language,
-        max_videos=req.max_videos
-    )
+    background_tasks.add_task(run_indexing_pipeline,
+        channel_id=req.channel_id, channel_url=req.channel_url,
+        user_id=req.user_id, language=req.language, max_videos=req.max_videos)
     return {"status": "indexing started", "channel_id": req.channel_id}
 
 @app.get("/channel-status/{channel_id}")
@@ -122,10 +108,6 @@ def channel_status(channel_id: str):
 # ══════════════════════════════════════════════════════
 # POLLING
 # ══════════════════════════════════════════════════════
-@app.on_event("startup")
-async def start_polling():
-    asyncio.create_task(poll_pending_channels())
-
 async def poll_pending_channels():
     log.info("🔄 Polling started for pending channels...")
     while True:
@@ -135,13 +117,9 @@ async def poll_pending_channels():
             if pending:
                 log.info(f"Found {len(pending)} pending channels")
                 for ch in pending:
-                    await asyncio.to_thread(
-                        run_indexing_pipeline,
-                        channel_id=ch["id"],
-                        channel_url=ch["channel_url"],
-                        user_id=ch["user_id"],
-                        language=ch.get("language", "hi")
-                    )
+                    await asyncio.to_thread(run_indexing_pipeline,
+                        channel_id=ch["id"], channel_url=ch["channel_url"],
+                        user_id=ch["user_id"], language=ch.get("language", "hi"))
         except Exception as e:
             log.error(f"Polling error: {e}")
         await asyncio.sleep(60)
@@ -149,8 +127,7 @@ async def poll_pending_channels():
 # ══════════════════════════════════════════════════════
 # CORE PIPELINE
 # ══════════════════════════════════════════════════════
-def run_indexing_pipeline(channel_id: str, channel_url: str, user_id: str,
-                           language: str = "hi", max_videos: int = 5):
+def run_indexing_pipeline(channel_id, channel_url, user_id, language="hi", max_videos=5):
     log.info(f"🚀 Starting pipeline for: {channel_url}")
     sb.table("channels").update({"status": "indexing"}).eq("id", channel_id).execute()
 
@@ -159,11 +136,10 @@ def run_indexing_pipeline(channel_id: str, channel_url: str, user_id: str,
         log.info(f"   Found {len(videos)} videos")
 
         if not videos:
-            sb.table("channels").update({"status": "error", "error_message": "No videos found"}).eq("id", channel_id).execute()
+            sb.table("channels").update({"status": "error"}).eq("id", channel_id).execute()
             return
 
-        success, failed = 0, 0
-        all_text = []
+        success, all_text = 0, []
 
         for i, video in enumerate(videos):
             vid_id = video["id"]
@@ -181,21 +157,16 @@ def run_indexing_pipeline(channel_id: str, channel_url: str, user_id: str,
                     success += 1
                     log.info(f"      ✅ {word_count:,} words saved")
                 else:
-                    failed += 1
                     log.info(f"      ⚠️  No transcript available")
             except Exception as e:
-                failed += 1
                 log.error(f"      ❌ Error: {e}")
 
-            time.sleep(1.5)
+            time.sleep(2)
 
         total_words = sum(len(t.split()) for t in all_text)
         sb.table("channels").update({
-            "status":         "indexed",
-            "videos_indexed": success,
-            "words_indexed":  total_words,
+            "status": "indexed", "videos_indexed": success, "words_indexed": total_words
         }).eq("id", channel_id).execute()
-
         log.info(f"✅ Pipeline complete: {success} videos, {total_words:,} words")
 
     except Exception as e:
@@ -203,7 +174,85 @@ def run_indexing_pipeline(channel_id: str, channel_url: str, user_id: str,
         sb.table("channels").update({"status": "error"}).eq("id", channel_id).execute()
 
 # ══════════════════════════════════════════════════════
-# YOUTUBE DATA API v3 — VIDEO FETCHING
+# FETCH TRANSCRIPT — Apify
+# ══════════════════════════════════════════════════════
+def fetch_transcript(video_id: str, language: str = "hi") -> str | None:
+    """
+    Fetch transcript using Apify.
+    Tries multiple actors until one works.
+    """
+    import requests
+
+    if not APIFY_TOKEN:
+        log.error("APIFY_API_TOKEN not set")
+        return None
+
+    video_url = f"https://www.youtube.com/watch?v={video_id}"
+    headers   = {"Authorization": f"Bearer {APIFY_TOKEN}", "Content-Type": "application/json"}
+
+    # Actor 1: most popular YouTube transcript actor
+    actors = [
+        {
+            "url":     "https://api.apify.com/v2/acts/topaz_sharingan~youtube-transcript-scraper/run-sync-get-dataset-items",
+            "payload": {"videoUrl": video_url, "language": language}
+        },
+        {
+            "url":     "https://api.apify.com/v2/acts/bernardo_procedural~youtube-transcript/run-sync-get-dataset-items",
+            "payload": {"url": video_url}
+        },
+        {
+            "url":     "https://api.apify.com/v2/acts/pintostudios~youtube-video-transcript/run-sync-get-dataset-items",
+            "payload": {"startUrls": [{"url": video_url}]}
+        },
+    ]
+
+    for actor in actors:
+        try:
+            log.info(f"      Trying actor: {actor['url'].split('/acts/')[1].split('/run')[0]}")
+            res = requests.post(actor["url"], json=actor["payload"], headers=headers, timeout=120)
+
+            if res.status_code == 200:
+                data = res.json()
+                if data:
+                    text = extract_text_from_apify(data)
+                    if text:
+                        log.info(f"      ✅ Got transcript via Apify")
+                        return text
+            else:
+                log.warning(f"      Actor returned {res.status_code}: {res.text[:100]}")
+
+        except Exception as e:
+            log.warning(f"      Actor error: {e}")
+            continue
+
+    log.error(f"      All Apify actors failed for {video_id}")
+    return None
+
+
+def extract_text_from_apify(data) -> str | None:
+    """Extract plain text from various Apify response formats."""
+    item = data[0] if isinstance(data, list) and data else data
+    if not item:
+        return None
+
+    # Format 1: list of transcript segments
+    for key in ["transcript", "captions", "subtitles", "segments"]:
+        if key in item and isinstance(item[key], list):
+            parts = item[key]
+            text  = " ".join([p.get("text", "") or p.get("content", "") for p in parts])
+            if text.strip():
+                return text.strip()
+
+    # Format 2: plain text field
+    for key in ["text", "content", "transcriptText", "full_text", "body"]:
+        if key in item and isinstance(item[key], str) and item[key].strip():
+            return item[key].strip()
+
+    log.warning(f"      Unknown Apify format. Keys: {list(item.keys())}")
+    return None
+
+# ══════════════════════════════════════════════════════
+# VIDEO FETCHING — YouTube Data API v3
 # ══════════════════════════════════════════════════════
 def _resolve_channel_id(youtube, channel_url: str) -> str | None:
     channel_url = channel_url.rstrip('/')
@@ -226,121 +275,47 @@ def _resolve_channel_id(youtube, channel_url: str) -> str | None:
         if items:
             return items[0]["id"]
 
-    log.warning(f"Could not resolve channel ID from URL: {channel_url}")
     return None
 
 
 def get_video_ids(channel_url: str, max_count: int = 5) -> list:
-    """Fetch video IDs using YouTube Data API v3 — no IP ban."""
     youtube    = build_youtube()
     channel_id = _resolve_channel_id(youtube, channel_url)
     if not channel_id:
-        log.error(f"Cannot resolve channel ID for: {channel_url}")
         return []
 
-    ch_res   = youtube.channels().list(part="contentDetails,snippet", id=channel_id).execute()
+    ch_res   = youtube.channels().list(part="contentDetails", id=channel_id).execute()
     ch_items = ch_res.get("items", [])
     if not ch_items:
-        log.error(f"Channel not found: {channel_id}")
         return []
 
-    uploads_playlist_id = (
-        ch_items[0].get("contentDetails", {}).get("relatedPlaylists", {}).get("uploads")
-    )
-    if not uploads_playlist_id:
-        log.error(f"No uploads playlist for: {channel_id}")
+    uploads_id = ch_items[0].get("contentDetails", {}).get("relatedPlaylists", {}).get("uploads")
+    if not uploads_id:
         return []
 
-    log.info(f"   Uploads playlist: {uploads_playlist_id}")
-    videos          = []
-    next_page_token = None
+    log.info(f"   Uploads playlist: {uploads_id}")
+    videos, next_token = [], None
 
     while len(videos) < max_count:
-        batch_size = min(50, max_count - len(videos))
         res = youtube.playlistItems().list(
-            part="snippet",
-            playlistId=uploads_playlist_id,
-            maxResults=batch_size,
-            pageToken=next_page_token
+            part="snippet", playlistId=uploads_id,
+            maxResults=min(50, max_count - len(videos)),
+            pageToken=next_token
         ).execute()
 
         for item in res.get("items", []):
             snippet  = item.get("snippet", {})
-            resource = snippet.get("resourceId", {})
-            vid_id   = resource.get("videoId")
+            vid_id   = snippet.get("resourceId", {}).get("videoId")
             title    = snippet.get("title", "Unknown")
             if vid_id:
                 videos.append({"id": vid_id, "title": title})
 
-        next_page_token = res.get("nextPageToken")
-        if not next_page_token:
+        next_token = res.get("nextPageToken")
+        if not next_token:
             break
 
     log.info(f"   Fetched {len(videos)} videos via YouTube Data API v3")
     return videos[:max_count]
-
-
-# ══════════════════════════════════════════════════════
-# TRANSCRIPT FETCHING — cookies-based to bypass IP ban
-# ══════════════════════════════════════════════════════
-def fetch_transcript(video_id: str, language: str = "hi") -> str | None:
-    """
-    Fetch transcript using Apify YouTube Transcript Actor.
-    Works from any cloud IP — no bans.
-    Free tier: $5/month = ~500 transcripts.
-    """
-    import requests
-
-    apify_token = os.environ.get("APIFY_API_TOKEN", "")
-    if not apify_token:
-        log.error("APIFY_API_TOKEN not set")
-        return None
-
-    try:
-        # Start the Apify actor run
-        start_url = "https://api.apify.com/v2/acts/pintostudio~youtube-transcript-scraper/run-sync-get-dataset-items"
-        
-        payload = {
-            "videoUrls": [f"https://www.youtube.com/watch?v={video_id}"],
-            "language": language
-        }
-
-        headers = {
-            "Authorization": f"Bearer {apify_token}",
-            "Content-Type": "application/json"
-        }
-
-        log.info(f"      Fetching via Apify for {video_id}...")
-        res = requests.post(
-            start_url,
-            json=payload,
-            headers=headers,
-            timeout=60
-        )
-
-        if res.status_code != 200:
-            log.error(f"      Apify error: {res.status_code} {res.text[:100]}")
-            return None
-
-        data = res.json()
-        if not data:
-            log.info(f"      No transcript returned by Apify")
-            return None
-
-        # Extract transcript text
-        transcript_items = data[0].get("transcript", [])
-        if not transcript_items:
-            # Try alternate format
-            text = data[0].get("text", "")
-            return text if text else None
-
-        full_text = " ".join([item.get("text", "") for item in transcript_items])
-        return full_text if full_text.strip() else None
-
-    except Exception as e:
-        log.error(f"      Apify fetch error: {e}")
-        return None
-
 
 # ══════════════════════════════════════════════════════
 # HELPERS
@@ -350,21 +325,14 @@ def clean_transcript(text: str) -> str:
     text = re.sub(r'\[.*?\]', '', text)
     return text.strip()
 
-
 def save_transcript_to_db(user_id, channel_id, video_id, title, content, word_count, language):
     try:
         sb.table("transcripts").upsert({
-            "user_id":    user_id,
-            "channel_id": channel_id,
-            "video_id":   video_id,
-            "title":      title,
-            "content":    content,
-            "word_count": word_count,
-            "language":   language,
+            "user_id": user_id, "channel_id": channel_id, "video_id": video_id,
+            "title": title, "content": content, "word_count": word_count, "language": language,
         }, on_conflict="video_id").execute()
     except Exception as e:
         log.error(f"DB save error: {e}")
-
 
 def save_transcript_to_storage(user_id, channel_id, video_id, title, content):
     try:
@@ -372,8 +340,7 @@ def save_transcript_to_storage(user_id, channel_id, video_id, title, content):
         file_path    = f"{user_id}/{channel_id}/{video_id}_{safe_title}.txt"
         file_content = f"Title: {title}\nVideo ID: {video_id}\nURL: https://youtube.com/watch?v={video_id}\n{'─'*60}\n\n{content}"
         sb.storage.from_("transcripts").upload(
-            path=file_path,
-            file=file_content.encode('utf-8'),
+            path=file_path, file=file_content.encode('utf-8'),
             file_options={"content-type": "text/plain", "upsert": "true"}
         )
     except Exception as e:
