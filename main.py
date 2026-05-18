@@ -206,13 +206,16 @@ def fetch_transcript(video_id: str, language: str = "hi") -> str | None:
             log.info(f"      Trying actor: {actor['url'].split('/acts/')[1].split('/run')[0]}")
             res = requests.post(actor["url"], json=actor["payload"], headers=headers, timeout=120)
 
-            if res.status_code == 200:
+            # Accept both 200 and 201 as success
+            if res.status_code in (200, 201):
                 data = res.json()
                 if data:
                     text = extract_text_from_apify(data)
                     if text:
-                        log.info(f"      ✅ Got transcript via Apify")
+                        log.info(f"      ✅ Got transcript via Apify ({len(text.split())} words)")
                         return text
+                    else:
+                        log.warning(f"      Actor returned data but could not extract text")
             else:
                 log.warning(f"      Actor returned {res.status_code}: {res.text[:100]}")
 
@@ -226,17 +229,31 @@ def fetch_transcript(video_id: str, language: str = "hi") -> str | None:
 
 def extract_text_from_apify(data) -> str | None:
     """Extract plain text from various Apify response formats."""
+    # Handle list wrapper
     item = data[0] if isinstance(data, list) and data else data
     if not item:
         return None
 
-    # Format 1: list of transcript segments
+    # Format: pintostudio actor returns {"data": [{"start":..., "dur":..., "text":...}]}
+    if "data" in item and isinstance(item["data"], list):
+        parts = item["data"]
+        if not parts:
+            return None
+        text = " ".join([p.get("text", "") for p in parts if p.get("text")])
+        # Remove music/sound annotations
+        text = re.sub(r"\[.*?\]", "", text)
+        text = re.sub(r"\s+", " ", text).strip()
+        if text:
+            return text
+
+    # Format 1: direct list of transcript segments
     for key in ["transcript", "captions", "subtitles", "segments"]:
         if key in item and isinstance(item[key], list):
             parts = item[key]
             text  = " ".join([p.get("text", "") or p.get("content", "") for p in parts])
-            if text.strip():
-                return text.strip()
+            text  = re.sub(r"\[.*?\]", "", text).strip()
+            if text:
+                return text
 
     # Format 2: plain text field
     for key in ["text", "content", "transcriptText", "full_text", "body"]:
